@@ -1,0 +1,6 @@
+{
+  "name": "NUM Library Assistant",
+  "description": "An automated cataloging assistant for library spine shelf labels. Instantly classifies books and computes accurate Cutter numbers using Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
