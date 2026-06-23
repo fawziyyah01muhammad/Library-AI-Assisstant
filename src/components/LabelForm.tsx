@@ -243,8 +243,7 @@ export default function LabelForm({ onClassifySuccess, isLoading, setIsLoading }
     setLoaderTextIndex(0);
 
     try {
-      const baseUrl = (import.meta as any).env?.BASE_URL || "/";
-      const apiPath = `${baseUrl.endsWith('/') ? baseUrl : baseUrl + '/'}api/classify`.replace(/\/+/g, '/');
+      const apiPath = "/api/classify";
 
       const response = await fetch(apiPath, {
         method: "POST",
