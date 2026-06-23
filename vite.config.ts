@@ -7,7 +7,7 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
-    base: '/Library-AI-Assisstant/',
+    base: process.env.NODE_ENV === 'production' ? './' : '/',
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

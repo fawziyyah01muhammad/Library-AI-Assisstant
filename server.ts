@@ -27,6 +27,36 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
+// Retries a Gemini function with exponential backoff on transient errors (503/429/overload)
+async function callGeminiWithRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 1000): Promise<T> {
+  let lastErr: any = null;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const errMsg = err?.message || String(err);
+      const isTransient = 
+        errMsg.includes("503") || 
+        errMsg.includes("429") || 
+        errMsg.includes("high demand") || 
+        errMsg.includes("limit") || 
+        errMsg.includes("overloaded") || 
+        errMsg.includes("temporary") ||
+        errMsg.includes("exhausted");
+      
+      if (isTransient && i < retries - 1) {
+        const sleepTime = initialDelay * Math.pow(2, i);
+        console.warn(`Gemini API call failed with transient error: ${errMsg.substring(0, 100)}. Retrying in ${sleepTime}ms... (Attempt ${i + 1}/${retries})`);
+        await new Promise((resolve) => setTimeout(resolve, sleepTime));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // DETERMINISTIC LOCAL CATALOGING FALLBACK SYSTEM
 interface FallbackSchema {
   ddc: string;
@@ -272,12 +302,12 @@ async function startServer() {
   });
 
   // Keep alive / Health Check
-  app.get("/api/health", (req, res) => {
+  app.get(["/api/health", "/Library-AI-Assisstant/api/health"], (req, res) => {
     res.json({ status: "healthy", time: new Date().toISOString() });
   });
 
   // Spine Label Book Classification Endpoint
-  app.post("/api/classify", async (req, res) => {
+  app.post(["/api/classify", "/Library-AI-Assisstant/api/classify"], async (req, res) => {
     const { title, author, year, subject, system } = req.body;
 
     if (!title || !author) {
@@ -320,11 +350,12 @@ Tasks:
 
 Generate a structured response adhering strictly to the JSON Schema.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: prompt,
-        config: {
-          systemInstruction: `You are an automated library cataloger. Match the Library of Congress Classification outline schedules (available via https://www.loc.gov/aba/publications/FreeLCC/freelcc.html) and Cutter table rules exactly:
+      const response = await callGeminiWithRetry(() =>
+        ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: prompt,
+          config: {
+            systemInstruction: `You are an automated library cataloger. Match the Library of Congress Classification outline schedules (available via https://www.loc.gov/aba/publications/FreeLCC/freelcc.html) and Cutter table rules exactly:
 
 LIBRARY OF CONGRESS CLASSIFICATION SOURCE:
 Get/map class numbers according to schedules published at https://www.loc.gov/aba/publications/FreeLCC/freelcc.html :
@@ -360,39 +391,40 @@ CUTTER TABLE RULES (LOC Official Table from provided image):
 7. Numerals: .A12-.A19
 
 Return precise LCC Class and Cutter figures. Always format the LCC Cutter with a leading period (e.g., .A87 for Jane Austen, .H39 for Stephen Hawking, .V24 for Dan Vanderkam). For DDC, format with standard Cutter-Sanborn three-figure table format (e.g. H391 or A874).`,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              main: {
-                type: Type.OBJECT,
-                properties: {
-                  classNumber: { type: Type.STRING, description: "Precise class number only. e.g. 510.4 or QA76.73" },
-                  cutterNumber: { type: Type.STRING, description: "Elegant, properly constructed Cutter number. e.g. S642j or .S734" },
-                  subjectCategory: { type: Type.STRING, description: "Detailed hierarchical subject category" },
-                  explanation: { type: Type.STRING, description: "Friendly justification of classification and detailing of cutter construction" }
-                },
-                required: ["classNumber", "cutterNumber", "subjectCategory", "explanation"]
-              },
-              alternates: {
-                type: Type.ARRAY,
-                description: "Array of exactly 2 alternate call number locations",
-                items: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                main: {
                   type: Type.OBJECT,
                   properties: {
-                    classNumber: { type: Type.STRING },
-                    cutterNumber: { type: Type.STRING },
-                    subjectCategory: { type: Type.STRING },
-                    explanation: { type: Type.STRING }
+                    classNumber: { type: Type.STRING, description: "Precise class number only. e.g. 510.4 or QA76.73" },
+                    cutterNumber: { type: Type.STRING, description: "Elegant, properly constructed Cutter number. e.g. S642j or .S734" },
+                    subjectCategory: { type: Type.STRING, description: "Detailed hierarchical subject category" },
+                    explanation: { type: Type.STRING, description: "Friendly justification of classification and detailing of cutter construction" }
                   },
                   required: ["classNumber", "cutterNumber", "subjectCategory", "explanation"]
+                },
+                alternates: {
+                  type: Type.ARRAY,
+                  description: "Array of exactly 2 alternate call number locations",
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      classNumber: { type: Type.STRING },
+                      cutterNumber: { type: Type.STRING },
+                      subjectCategory: { type: Type.STRING },
+                      explanation: { type: Type.STRING }
+                    },
+                    required: ["classNumber", "cutterNumber", "subjectCategory", "explanation"]
+                  }
                 }
-              }
-            },
-            required: ["main", "alternates"]
+              },
+              required: ["main", "alternates"]
+            }
           }
-        }
-      });
+        })
+      );
 
       const text = response.text;
       if (!text) {
@@ -427,6 +459,7 @@ Return precise LCC Class and Cutter figures. Always format the LCC Cutter with a
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
+    app.use("/Library-AI-Assisstant", express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
